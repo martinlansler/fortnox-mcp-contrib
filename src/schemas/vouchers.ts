@@ -22,7 +22,7 @@ export const VoucherRowSchema = z.object({
   description: z.string()
     .max(200)
     .optional()
-    .describe("Description for this row"),
+    .describe("Row text, stored as Fortnox TransactionInformation (Transaktionsinfo)"),
   cost_center: z.string()
     .max(20)
     .optional()
@@ -117,6 +117,10 @@ export const CreateVoucherSchema = z.object({
   rows: z.array(VoucherRowSchema)
     .min(2)
     .describe("Voucher rows (minimum 2 rows required, debit must equal credit)"),
+  financial_year: z.number()
+    .int()
+    .optional()
+    .describe("Fortnox financial year ID (1, 2, 3...). Optional: Fortnox derives the year from transaction_date."),
   cost_center: z.string()
     .max(20)
     .optional()

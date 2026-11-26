@@ -30,7 +30,11 @@ interface FortnoxVoucherRow {
   Account: number;
   Debit?: number;
   Credit?: number;
+  /** Fortnox fills this with the account name; the row's own text is TransactionInformation. */
   Description?: string;
+  TransactionInformation?: string;
+  /** True for a row struck out by a correction; it does not count towards the voucher. */
+  Removed?: boolean;
   CostCenter?: string;
   Project?: string;
 }
@@ -215,12 +219,17 @@ Returns:
           transaction_date: voucher.TransactionDate,
           rows: (voucher.VoucherRows || []).map((row) => ({
             account_number: row.Account,
+            account_name: row.Description || null,
+            transaction_information: row.TransactionInformation || null,
             debit: row.Debit || 0,
             credit: row.Credit || 0,
-            description: row.Description || null,
+            removed: row.Removed ?? false,
             cost_center: row.CostCenter || null,
             project: row.Project || null
-          }))
+          })),
+          // Totals exclude struck-out (removed) rows, matching what Fortnox shows as Summa.
+          total_debit: (voucher.VoucherRows || []).filter((r) => !r.Removed).reduce((sum, r) => sum + (r.Debit || 0), 0),
+          total_credit: (voucher.VoucherRows || []).filter((r) => !r.Removed).reduce((sum, r) => sum + (r.Credit || 0), 0)
         };
 
         let textContent: string;
@@ -236,22 +245,26 @@ Returns:
             "",
             "## Accounting Rows",
             "",
-            "| Account | Description | Debit | Credit |",
-            "|---------|-------------|-------|--------|"
+            "| Account | Name | Transaction info | Debit | Credit |",
+            "|---------|------|------------------|-------|--------|"
           ];
 
           let totalDebit = 0;
           let totalCredit = 0;
 
           for (const row of voucher.VoucherRows || []) {
-            totalDebit += row.Debit || 0;
-            totalCredit += row.Credit || 0;
+            const strike = (t: string) => (row.Removed ? `~~${t}~~` : t);
+            if (!row.Removed) {
+              totalDebit += row.Debit || 0;
+              totalCredit += row.Credit || 0;
+            }
             lines.push(
-              `| ${row.Account} | ${row.Description || "-"} | ${formatMoney(row.Debit || 0)} | ${formatMoney(row.Credit || 0)} |`
+              `| ${strike(String(row.Account))} | ${strike(row.Description || "-")} | ${row.TransactionInformation || "-"} | ${row.Debit ? strike(formatMoney(row.Debit)) : ""} | ${row.Credit ? strike(formatMoney(row.Credit)) : ""} |` +
+              (row.Removed ? " (removed)" : "")
             );
           }
 
-          lines.push(`| **Total** | | **${formatMoney(totalDebit)}** | **${formatMoney(totalCredit)}** |`);
+          lines.push(`| **Total** | | | **${formatMoney(totalDebit)}** | **${formatMoney(totalCredit)}** |`);
 
           textContent = lines.join("\n");
         }
@@ -278,6 +291,8 @@ Args:
   - transaction_date (string): Transaction date YYYY-MM-DD (required)
   - rows (array): Accounting rows, minimum 2 (required)
     - Each row: { account_number, debit?, credit?, description?, cost_center?, project? }
+      (row description is written to Fortnox TransactionInformation, the "Transaktionsinfo" column)
+  - financial_year (number): Fortnox financial year ID; optional, Fortnox derives it from the date
   - cost_center (string): Default cost center for all rows
   - project (string): Default project for all rows
 
@@ -331,7 +346,9 @@ Example:
             };
             if (row.debit !== undefined && row.debit > 0) voucherRow.Debit = row.debit;
             if (row.credit !== undefined && row.credit > 0) voucherRow.Credit = row.credit;
-            if (row.description) voucherRow.Description = row.description;
+            // Fortnox overwrites a row's Description with the account name; the row text
+            // shown as "Transaktionsinfo" is TransactionInformation.
+            if (row.description) voucherRow.TransactionInformation = row.description;
             if (row.cost_center || params.cost_center) {
               voucherRow.CostCenter = row.cost_center || params.cost_center;
             }
@@ -345,7 +362,8 @@ Example:
         const response = await fortnoxRequest<VoucherResponse>(
           "/3/vouchers",
           "POST",
-          { Voucher: voucherData }
+          { Voucher: voucherData },
+          params.financial_year ? { financialyear: params.financial_year } : undefined
         );
         const voucher = response.Voucher;
 
@@ -354,6 +372,7 @@ Example:
           message: `Voucher ${voucher.VoucherSeries}${voucher.VoucherNumber} created successfully`,
           voucher_series: voucher.VoucherSeries,
           voucher_number: voucher.VoucherNumber,
+          voucher_year: voucher.Year,
           description: voucher.Description,
           transaction_date: voucher.TransactionDate
         };
@@ -558,6 +577,7 @@ Examples:
           voucher_description: string;
           account: number;
           description: string | null;
+          transaction_information: string | null;
           debit: number;
           credit: number;
         }> = [];
@@ -590,6 +610,7 @@ Examples:
             if (!voucher || !voucher.VoucherRows) continue;
 
             for (const row of voucher.VoucherRows) {
+              if (row.Removed) continue;
               if (accountMatches(row.Account)) {
                 matchingTransactions.push({
                   voucher_series: voucher.VoucherSeries,
@@ -598,6 +619,7 @@ Examples:
                   voucher_description: voucher.Description,
                   account: row.Account,
                   description: row.Description || null,
+                  transaction_information: row.TransactionInformation || null,
                   debit: row.Debit || 0,
                   credit: row.Credit || 0
                 });
@@ -866,7 +888,8 @@ Examples:
               if (!voucher) continue;
 
               const descriptionMatch = textMatches(voucher.Description);
-              const rowMatch = voucher.VoucherRows?.some(row => textMatches(row.Description));
+              const rowMatch = voucher.VoucherRows?.some(row =>
+                !row.Removed && (textMatches(row.Description) || textMatches(row.TransactionInformation)));
 
               if (descriptionMatch || rowMatch) {
                 matchingVouchers.push({
