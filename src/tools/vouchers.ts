@@ -54,7 +54,14 @@ interface FortnoxVoucherListItem {
   VoucherNumber: number;
   Description: string;
   TransactionDate: string;
+  /** Fortnox financial year ID the voucher belongs to */
+  Year?: number;
   "@url"?: string;
+}
+
+/** Series + number only identify a voucher within one financial year. */
+function totalsKey(v: FortnoxVoucherListItem, year: number | undefined): string {
+  return `${year ?? ""}:${v.VoucherSeries}:${v.VoucherNumber}`;
 }
 
 interface VoucherListResponse {
@@ -104,6 +111,9 @@ Args:
   - financial_year (number): Fortnox financial year ID (use fortnox_list_financial_years to find)
   - from_date (string): Filter vouchers from this date (YYYY-MM-DD)
   - to_date (string): Filter vouchers to this date (YYYY-MM-DD)
+  - sort_by ('date' | 'number'): Sort client-side (Fortnox has no server-side voucher sort); fetches all matching vouchers first
+  - sort_order ('ascending' | 'descending'): Sort direction (default: ascending)
+  - include_totals (boolean): Add total_debit/total_credit per voucher (one extra request per voucher on the page)
   - response_format ('markdown' | 'json'): Output format
 
 Returns:
@@ -138,18 +148,79 @@ Examples:
         if (params.from_date) queryParams.fromdate = params.from_date;
         if (params.to_date) queryParams.todate = params.to_date;
 
-        const response = await fortnoxRequest<VoucherListResponse>(endpoint, "GET", undefined, queryParams);
-        const vouchers = response.Vouchers || [];
-        const total = response.MetaInformation?.["@TotalResources"] || vouchers.length;
+        let vouchers: FortnoxVoucherListItem[];
+        let total: number;
+        let truncationReason: string | undefined;
+        if (params.sort_by) {
+          // Fortnox /3/vouchers has no sort parameter: fetch the whole (filtered)
+          // set, sort here, then return the requested page.
+          const { limit: _l, page: _p, ...filterParams } = queryParams;
+          const all = await fetchAllPages<FortnoxVoucherListItem, VoucherListResponse>(
+            endpoint,
+            filterParams,
+            (r) => r.Vouchers || [],
+            (r) => r.MetaInformation?.["@TotalResources"] || 0
+          );
+          const dir = params.sort_order === "descending" ? -1 : 1;
+          const sorted = [...all.items].sort((a, b) => {
+            const primary = params.sort_by === "date"
+              ? a.TransactionDate.localeCompare(b.TransactionDate)
+              : 0;
+            return dir * (primary ||
+              a.VoucherSeries.localeCompare(b.VoucherSeries) ||
+              a.VoucherNumber - b.VoucherNumber);
+          });
+          total = all.truncated ? Math.max(all.total, sorted.length) : sorted.length;
+          if (all.truncated) {
+            truncationReason = `Sorted only the first ${sorted.length} of ${total} vouchers (${all.truncationReason}). ` +
+              `Narrow the date range or series to sort the full set.`;
+          }
+          const start = (params.page - 1) * params.limit;
+          vouchers = sorted.slice(start, start + params.limit);
+        } else {
+          const response = await fortnoxRequest<VoucherListResponse>(endpoint, "GET", undefined, queryParams);
+          vouchers = response.Vouchers || [];
+          total = response.MetaInformation?.["@TotalResources"] || vouchers.length;
+        }
+
+        // Optional per-voucher totals: the list endpoint has no amounts, so this
+        // costs one extra request per voucher on the returned page.
+        const totals = new Map<string, { debit: number; credit: number }>();
+        if (params.include_totals) {
+          for (const v of vouchers) {
+            // Series + number is only unique within a financial year: always look up the
+            // voucher's own year, or a date-filtered list in an older year gets the wrong totals.
+            const year = v.Year ?? params.financial_year;
+            if (year === undefined) {
+              throw new Error("include_totals needs financial_year: Fortnox did not say which year the vouchers belong to.");
+            }
+            const detail = await fortnoxRequest<VoucherResponse>(
+              `/3/vouchers/${encodeURIComponent(v.VoucherSeries)}/${v.VoucherNumber}`,
+              "GET",
+              undefined,
+              { financialyear: year }
+            );
+            const rows = (detail.Voucher.VoucherRows || []).filter((r) => !r.Removed);
+            totals.set(totalsKey(v, year), {
+              debit: rows.reduce((sum, r) => sum + (r.Debit || 0), 0),
+              credit: rows.reduce((sum, r) => sum + (r.Credit || 0), 0)
+            });
+          }
+        }
 
         const output = {
           ...buildPaginationMeta(total, params.page, params.limit, vouchers.length),
-          vouchers: vouchers.map((v) => ({
-            voucher_series: v.VoucherSeries,
-            voucher_number: v.VoucherNumber,
-            description: v.Description,
-            transaction_date: v.TransactionDate
-          }))
+          ...(truncationReason ? { truncated: true, truncation_reason: truncationReason } : {}),
+          vouchers: vouchers.map((v) => {
+            const t = totals.get(totalsKey(v, v.Year ?? params.financial_year));
+            return {
+              voucher_series: v.VoucherSeries,
+              voucher_number: v.VoucherNumber,
+              description: v.Description,
+              transaction_date: v.TransactionDate,
+              ...(t ? { total_debit: t.debit, total_credit: t.credit } : {})
+            };
+          })
         };
 
         let textContent: string;
@@ -164,6 +235,7 @@ Examples:
             params.limit,
             (v) => `- **${v.VoucherSeries}${v.VoucherNumber}** (${formatDisplayDate(v.TransactionDate)}): ${v.Description}`
           );
+          if (truncationReason) textContent += `\n\n⚠️ **Note**: ${truncationReason}`;
         }
 
         return buildToolResponse(textContent, output);

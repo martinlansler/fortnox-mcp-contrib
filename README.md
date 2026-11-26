@@ -128,7 +128,7 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 - `fortnox_delete_account` - Delete account
 
 ### Voucher Management
-- `fortnox_list_vouchers` - List vouchers (journal entries)
+- `fortnox_list_vouchers` - List vouchers (journal entries), optionally sorted by date or number and with per-voucher totals
 - `fortnox_get_voucher` - Get voucher details with rows
 - `fortnox_create_voucher` - Create manual voucher
 - `fortnox_list_voucher_series` - List available voucher series
