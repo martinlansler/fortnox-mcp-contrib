@@ -37,7 +37,9 @@ const SCOPES = [
   "invoice",
   "supplier",
   "bookkeeping",
-  "companyinformation"
+  "companyinformation",
+  "supplierinvoice",
+  "payment"
 ];
 
 async function getAuthorizationCode(): Promise<string> {

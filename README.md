@@ -115,6 +115,29 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 - `fortnox_get_supplier_invoice` - Get supplier invoice details
 - `fortnox_approve_supplier_invoice` - Approve supplier invoice for payment
 - `fortnox_payables_report` - Get accounts payable aging report
+- `fortnox_create_supplier_invoice` - Register a supplier invoice, **unbooked**
+- `fortnox_update_supplier_invoice` - Change an unbooked supplier invoice
+- `fortnox_cancel_supplier_invoice` - Cancel an unbooked supplier invoice
+- `fortnox_bookkeep_supplier_invoice` - Book a supplier invoice (creates its voucher; irreversible)
+- `fortnox_create_supplier_invoice_payment` - Register a payment, **unbooked**
+- `fortnox_delete_supplier_invoice_payment` - Delete an unbooked payment
+- `fortnox_bookkeep_supplier_invoice_payment` - Book a payment (creates its voucher; irreversible)
+- `fortnox_list_supplier_invoice_payments` - List payments, optionally for one invoice
+- `fortnox_list_modes_of_payment` - List modes of payment and the account each one credits
+
+Registering and booking are separate calls, so nothing is booked by accident. On a supplier invoice,
+send the **cost rows only**: Fortnox generates the 2440 row from `total` and the VAT rows from `vat` and
+`vat_type` (`NORMAL`, `EUINTERNAL` for purchases from abroad, `REVERSE` for Swedish domestic reverse
+charge). Creating an invoice whose supplier and invoice number already exist is refused unless
+`allow_duplicate` is set, and a payment larger than the remaining balance is refused unless
+`allow_overpayment` is set. Payments on foreign-currency invoices take the amount in the invoice
+currency and, optionally, `amount_sek`. Rows can only be given on SEK invoices.
+
+These tools need the `supplierinvoice` and `payment` scopes on your Fortnox app. Enable them on the app
+before upgrading: the login flow (remote mode and `scripts/get-token.ts`) now requests them, and
+Fortnox may refuse the login when the app lacks a requested scope. (`fortnox_list_modes_of_payment` also needs `settings`, which is not requested by default: add it to the
+scopes in `scripts/get-token.ts` if you want that tool). A refresh token keeps the scopes it was created
+with, so create a new one after enabling them.
 
 ### Order Management
 - `fortnox_list_orders` - List sales orders with filtering
