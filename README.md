@@ -139,6 +139,21 @@ Fortnox may refuse the login when the app lacks a requested scope. (`fortnox_lis
 scopes in `scripts/get-token.ts` if you want that tool). A refresh token keeps the scopes it was created
 with, so create a new one after enabling them.
 
+### Files (inbox and attachments)
+- `fortnox_upload_to_inbox` - Upload a PDF or image to the Fortnox inbox, optionally linking it to a supplier invoice or voucher in the same call
+- `fortnox_upload_files` - Upload many files, or every PDF/image in a directory, each optionally linked (local mode only)
+- `fortnox_list_inbox` - List inbox files and folders
+- `fortnox_link_file_to_supplier_invoice` - Attach a file to a supplier invoice
+- `fortnox_link_file_to_voucher` - Attach a file to a voucher
+- `fortnox_list_file_connections` - Show which files are linked to which supplier invoices and vouchers
+
+In local mode, uploads read the file from disk: give a path (Windows paths are mapped to WSL), or just
+a file name to look it up in Downloads and Desktop, or in the folders listed in `FORTNOX_UPLOAD_DIRS`
+(separated by `;`); the result's `source_path` shows which file was used. Reading local files is only
+offered over stdio: the local HTTP transport and remote mode take files as base64, in requests of up to
+20 MB (on Vercel the platform limits request bodies to about 4.5 MB, so roughly 3 MB files). Only PDF and image files are accepted.
+These tools need the `inbox` and `connectfile` scopes.
+
 ### Order Management
 - `fortnox_list_orders` - List sales orders with filtering
 - `fortnox_list_offers` - List offers/quotes with filtering

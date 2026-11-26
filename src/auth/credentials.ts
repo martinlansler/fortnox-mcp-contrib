@@ -56,5 +56,7 @@ export const FORTNOX_SCOPES = [
   "supplier",
   "bookkeeping",
   "supplierinvoice", // /3/supplierinvoices (create, update, bookkeep, cancel)
-  "payment"          // /3/supplierinvoicepayments
+  "payment",         // /3/supplierinvoicepayments
+  "inbox",           // /3/inbox upload and listing
+  "connectfile"      // /3/supplierinvoicefileconnections, /3/voucherfileconnections
 ];

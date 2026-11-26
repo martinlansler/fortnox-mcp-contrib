@@ -21,6 +21,7 @@ import { registerAnalyticsTools } from "../tools/analytics.js";
 import { registerOrderTools } from "../tools/orders.js";
 import { registerBIAnalyticsTools } from "../tools/biAnalytics.js";
 import { registerPayablesTools } from "../tools/payables.js";
+import { registerFileTools } from "../tools/files.js";
 import { ITokenStorage } from "../auth/storage/types.js";
 
 export interface RemoteServerOptions {
@@ -42,7 +43,11 @@ export function createRemoteServer(options: RemoteServerOptions): Express {
   initializeTokenProvider(oauthProvider.getTokenProvider());
 
   const app = express();
-  app.use(express.json());
+  // /mcp gets a larger JSON limit, applied after authentication, so that a PDF sent as base64 to
+  // fortnox_upload_to_inbox fits. Every other route keeps the 100 KB default.
+  const defaultJson = express.json();
+  const mcpJson = express.json({ limit: "20mb" });
+  app.use((req, res, next) => (req.path === "/mcp" ? next() : defaultJson(req, res, next)));
 
   // Trust proxy headers (for Vercel, etc.)
   app.set("trust proxy", 1);
@@ -116,6 +121,8 @@ export function createRemoteServer(options: RemoteServerOptions): Express {
   registerOrderTools(mcpServer);
   registerBIAnalyticsTools(mcpServer);
   registerPayablesTools(mcpServer);
+  // The remote server's disk is not the caller's: no path-based upload here.
+  registerFileTools(mcpServer, { allowLocalFiles: false });
 
   // Protected MCP endpoint
   app.post(
@@ -124,6 +131,7 @@ export function createRemoteServer(options: RemoteServerOptions): Express {
       verifier: oauthProvider,
       resourceMetadataUrl: `${serverUrl}/.well-known/oauth-protected-resource`,
     }),
+    mcpJson,
     async (req: Request, res: Response) => {
       try {
         const userId = req.auth ? getUserIdFromAuth(req.auth) : undefined;

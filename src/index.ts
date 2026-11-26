@@ -44,8 +44,13 @@ import { registerSupplierInvoiceTools } from "./tools/supplierInvoices.js";
 import { registerOrderTools } from "./tools/orders.js";
 import { registerBIAnalyticsTools } from "./tools/biAnalytics.js";
 import { registerPayablesTools } from "./tools/payables.js";
+import { registerFileTools } from "./tools/files.js";
 
-function createMcpServer(): McpServer {
+/**
+ * allowLocalFiles: let the file tools read from this machine's disk. Only for stdio, where the
+ * caller is the local user; the local HTTP server has no authentication.
+ */
+function createMcpServer(options: { allowLocalFiles: boolean }): McpServer {
   const server = new McpServer({
     name: "fortnox-mcp-server",
     version: "1.0.0"
@@ -62,6 +67,7 @@ function createMcpServer(): McpServer {
   registerOrderTools(server);
   registerBIAnalyticsTools(server);
   registerPayablesTools(server);
+  registerFileTools(server, { allowLocalFiles: options.allowLocalFiles });
 
   return server;
 }
@@ -77,7 +83,7 @@ async function runStdio(): Promise<void> {
     process.exit(1);
   }
 
-  const server = createMcpServer();
+  const server = createMcpServer({ allowLocalFiles: true });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -93,9 +99,10 @@ async function runLocalHTTP(): Promise<void> {
     process.exit(1);
   }
 
-  const server = createMcpServer();
+  const server = createMcpServer({ allowLocalFiles: false });
   const app = express();
-  app.use(express.json());
+  // Large enough for a PDF sent as base64 to fortnox_upload_to_inbox (the default is 100 KB).
+  app.use(express.json({ limit: "20mb" }));
 
   // Health check endpoint
   app.get("/health", (_req, res) => {
