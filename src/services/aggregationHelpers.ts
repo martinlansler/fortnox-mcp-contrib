@@ -145,7 +145,12 @@ export function groupByTimePeriod<T>(
  * Sum values from items using a value extractor
  */
 export function sumBy<T>(items: T[], valueExtractor: (item: T) => number): number {
-  return items.reduce((sum, item) => sum + valueExtractor(item), 0);
+  // Fortnox returns some amounts (e.g. supplier invoice Total/Balance) as strings;
+  // coerce so the sum is numeric instead of a concatenated string.
+  return items.reduce((sum, item) => {
+    const n = Number(valueExtractor(item));
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
 }
 
 /**
