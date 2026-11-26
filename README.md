@@ -190,6 +190,7 @@ npm run build
 | `FORTNOX_CLIENT_SECRET` | Yes | Your Fortnox app client secret |
 | `FORTNOX_REFRESH_TOKEN` | Yes | OAuth2 refresh token (only needed for initial setup; automatically persisted after first use) |
 | `FORTNOX_ACCESS_TOKEN` | No | Current access token (auto-refreshed) |
+| `FORTNOX_TOKEN_FILE` | No | Where rotated tokens are persisted (default `~/.fortnox-mcp/tokens.json`). `~` is expanded. Give each server entry its own file when you connect more than one Fortnox company; entries sharing one file overwrite each other's tokens. A file written by an older version is tried first, so after logging in to a different company, delete it |
 | `TRANSPORT` | No | `stdio` (default) or `http` |
 | `PORT` | No | HTTP port (default: 3000) |
 
