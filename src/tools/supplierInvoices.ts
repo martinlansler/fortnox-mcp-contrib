@@ -37,6 +37,7 @@ interface FortnoxSupplierInvoiceRow {
   Total?: number;
   Project?: string;
   CostCenter?: string;
+  TransactionInformation?: string;
 }
 
 interface FortnoxSupplierInvoice {
@@ -55,6 +56,11 @@ interface FortnoxSupplierInvoice {
   PaymentPending?: boolean;
   OCR?: string;
   Comments?: string;
+  VATType?: string;
+  VoucherSeries?: string;
+  VoucherNumber?: number;
+  VoucherYear?: number;
+  Vouchers?: Array<{ Number?: number | string; Series?: string; Year?: number | string; ReferenceType?: string }>;
   SupplierInvoiceRows?: FortnoxSupplierInvoiceRow[];
   "@url"?: string;
 }
@@ -88,12 +94,54 @@ interface SupplierInvoiceResponse {
 }
 
 /**
+ * Fortnox returns Total, Balance, VAT etc. as strings ("0", "1250.5") and some
+ * flags as strings ("false"). Normalise once, right after each API call, so that
+ * comparisons and sums below work on real numbers and booleans.
+ */
+export function toNum(v: unknown): number {
+  if (v === undefined || v === null || v === "") return 0;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function toBool(v: unknown): boolean {
+  return v === true || v === "true";
+}
+
+function bookingVoucher(invoice: FortnoxSupplierInvoice) {
+  const vs = invoice.Vouchers || [];
+  return vs.find((v) => (v.ReferenceType || "").toUpperCase() === "SUPPLIERINVOICE") || vs[0];
+}
+
+function toNumOrNull(v: unknown): number | null {
+  return v === undefined || v === null || v === "" ? null : Number(v);
+}
+
+export function normalizeInvoice<T extends FortnoxSupplierInvoiceListItem | FortnoxSupplierInvoice>(inv: T): T {
+  const out = { ...inv } as T & Record<string, unknown>;
+  out.Total = toNum(inv.Total);
+  out.Balance = toNum(inv.Balance);
+  out.Booked = toBool(inv.Booked);
+  // The list endpoint calls the flag Cancel; the single-invoice endpoint calls it Cancelled.
+  out.Cancelled = toBool(inv.Cancelled ?? (inv as { Cancel?: unknown }).Cancel);
+  if ("Credit" in inv) out.Credit = toBool((inv as FortnoxSupplierInvoice).Credit);
+  if ("PaymentPending" in inv) out.PaymentPending = toBool((inv as FortnoxSupplierInvoice).PaymentPending);
+  return out;
+}
+
+/**
  * Get supplier invoice status
  */
-function getSupplierInvoiceStatus(inv: FortnoxSupplierInvoiceListItem): string {
+export function getSupplierInvoiceStatus(inv: FortnoxSupplierInvoiceListItem): string {
   if (inv.Cancelled) return "cancelled";
-  if ((inv.Balance || 0) === 0) return "paid";
-  if (!inv.Booked) return "draft";
+  if (!inv.Booked) return "unbooked";
+  const total = toNum(inv.Total);
+  const signed = toNum(inv.Balance);
+  if (signed === 0) return "fully_paid";
+  // A balance with the opposite sign to the total means more was paid than owed.
+  if (total !== 0 && Math.sign(signed) !== Math.sign(total)) return "overpaid";
+  // Compare magnitudes: on a credit note both Balance and Total are negative.
+  if (Math.abs(signed) < Math.abs(total)) return "partially_paid";
   return "unpaid";
 }
 
@@ -181,7 +229,7 @@ Examples:
             (r) => r.SupplierInvoices || [],
             (r) => r.MetaInformation?.["@TotalResources"] || 0
           );
-          invoices = result.items;
+          invoices = result.items.map(normalizeInvoice);
           total = result.total;
           pagesFetched = result.pagesFetched;
           truncated = result.truncated;
@@ -192,7 +240,7 @@ Examples:
           queryParams.page = params.page;
 
           const response = await fortnoxRequest<SupplierInvoiceListResponse>("/3/supplierinvoices", "GET", undefined, queryParams);
-          invoices = response.SupplierInvoices || [];
+          invoices = (response.SupplierInvoices || []).map(normalizeInvoice);
           total = response.MetaInformation?.["@TotalResources"] || invoices.length;
         }
 
@@ -326,7 +374,7 @@ Returns:
         const response = await fortnoxRequest<SupplierInvoiceResponse>(
           `/3/supplierinvoices/${encodeURIComponent(params.given_number)}`
         );
-        const invoice = response.SupplierInvoice;
+        const invoice = normalizeInvoice(response.SupplierInvoice);
 
         const output = {
           given_number: invoice.GivenNumber,
@@ -343,6 +391,12 @@ Returns:
           cancelled: invoice.Cancelled ?? false,
           credit: invoice.Credit ?? false,
           payment_pending: invoice.PaymentPending ?? false,
+          status: getSupplierInvoiceStatus(invoice),
+          vat_type: invoice.VATType || null,
+          // GET returns the booking voucher in Vouchers[]; the bookkeep response uses flat fields.
+          voucher_series: invoice.VoucherSeries || bookingVoucher(invoice)?.Series || null,
+          voucher_number: invoice.VoucherNumber ?? toNumOrNull(bookingVoucher(invoice)?.Number),
+          voucher_year: invoice.VoucherYear ?? toNumOrNull(bookingVoucher(invoice)?.Year),
           comments: invoice.Comments || null,
           rows: (invoice.SupplierInvoiceRows || []).map((row) => ({
             article_number: row.ArticleNumber || null,
@@ -351,6 +405,7 @@ Returns:
             debit: row.Debit || 0,
             credit: row.Credit || 0,
             total: row.Total || 0,
+            transaction_information: row.TransactionInformation || null,
             project: row.Project || null,
             cost_center: row.CostCenter || null
           }))
@@ -360,9 +415,7 @@ Returns:
         if (params.response_format === ResponseFormat.JSON) {
           textContent = JSON.stringify(output, null, 2);
         } else {
-          const status = invoice.Cancelled ? "CANCELLED" :
-            (invoice.Balance === 0 ? "PAID" :
-              (invoice.Booked ? "BOOKED" : "DRAFT"));
+          const status = getSupplierInvoiceStatus(invoice).toUpperCase();
 
           const lines = [
             `# Supplier Invoice #${invoice.GivenNumber}`,
@@ -439,7 +492,7 @@ Returns:
           `/3/supplierinvoices/${encodeURIComponent(params.given_number)}/approvalpayment`,
           "PUT"
         );
-        const invoice = response.SupplierInvoice;
+        const invoice = normalizeInvoice(response.SupplierInvoice);
 
         const output = {
           success: true,
@@ -526,7 +579,7 @@ Examples:
           (r) => r.MetaInformation?.["@TotalResources"] || 0
         );
 
-        let invoices = result.items;
+        let invoices = result.items.map(normalizeInvoice);
 
         // Apply min_amount filter
         if (params.min_amount !== undefined) {

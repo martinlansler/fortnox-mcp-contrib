@@ -115,6 +115,44 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 - `fortnox_get_supplier_invoice` - Get supplier invoice details
 - `fortnox_approve_supplier_invoice` - Approve supplier invoice for payment
 - `fortnox_payables_report` - Get accounts payable aging report
+- `fortnox_create_supplier_invoice` - Register a supplier invoice, **unbooked**
+- `fortnox_update_supplier_invoice` - Change an unbooked supplier invoice
+- `fortnox_cancel_supplier_invoice` - Cancel an unbooked supplier invoice
+- `fortnox_bookkeep_supplier_invoice` - Book a supplier invoice (creates its voucher; irreversible)
+- `fortnox_create_supplier_invoice_payment` - Register a payment, **unbooked**
+- `fortnox_delete_supplier_invoice_payment` - Delete an unbooked payment
+- `fortnox_bookkeep_supplier_invoice_payment` - Book a payment (creates its voucher; irreversible)
+- `fortnox_list_supplier_invoice_payments` - List payments, optionally for one invoice
+- `fortnox_list_modes_of_payment` - List modes of payment and the account each one credits
+
+Registering and booking are separate calls, so nothing is booked by accident. On a supplier invoice,
+send the **cost rows only**: Fortnox generates the 2440 row from `total` and the VAT rows from `vat` and
+`vat_type` (`NORMAL`, `EUINTERNAL` for purchases from abroad, `REVERSE` for Swedish domestic reverse
+charge). Creating an invoice whose supplier and invoice number already exist is refused unless
+`allow_duplicate` is set, and a payment larger than the remaining balance is refused unless
+`allow_overpayment` is set. Payments on foreign-currency invoices take the amount in the invoice
+currency and, optionally, `amount_sek`. Rows can only be given on SEK invoices.
+
+These tools need the `supplierinvoice` and `payment` scopes on your Fortnox app. Enable them on the app
+before upgrading: the login flow (remote mode and `scripts/get-token.ts`) now requests them, and
+Fortnox may refuse the login when the app lacks a requested scope. (`fortnox_list_modes_of_payment` also needs `settings`, which is not requested by default: add it to the
+scopes in `scripts/get-token.ts` if you want that tool). A refresh token keeps the scopes it was created
+with, so create a new one after enabling them.
+
+### Files (inbox and attachments)
+- `fortnox_upload_to_inbox` - Upload a PDF or image to the Fortnox inbox, optionally linking it to a supplier invoice or voucher in the same call
+- `fortnox_upload_files` - Upload many files, or every PDF/image in a directory, each optionally linked (local mode only)
+- `fortnox_list_inbox` - List inbox files and folders
+- `fortnox_link_file_to_supplier_invoice` - Attach a file to a supplier invoice
+- `fortnox_link_file_to_voucher` - Attach a file to a voucher
+- `fortnox_list_file_connections` - Show which files are linked to which supplier invoices and vouchers
+
+In local mode, uploads read the file from disk: give a path (Windows paths are mapped to WSL), or just
+a file name to look it up in Downloads and Desktop, or in the folders listed in `FORTNOX_UPLOAD_DIRS`
+(separated by `;`); the result's `source_path` shows which file was used. Reading local files is only
+offered over stdio: the local HTTP transport and remote mode take files as base64, in requests of up to
+20 MB (on Vercel the platform limits request bodies to about 4.5 MB, so roughly 3 MB files). Only PDF and image files are accepted.
+These tools need the `inbox` and `connectfile` scopes.
 
 ### Order Management
 - `fortnox_list_orders` - List sales orders with filtering
@@ -128,7 +166,7 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 - `fortnox_delete_account` - Delete account
 
 ### Voucher Management
-- `fortnox_list_vouchers` - List vouchers (journal entries)
+- `fortnox_list_vouchers` - List vouchers (journal entries), optionally sorted by date or number and with per-voucher totals
 - `fortnox_get_voucher` - Get voucher details with rows
 - `fortnox_create_voucher` - Create manual voucher
 - `fortnox_list_voucher_series` - List available voucher series
@@ -190,6 +228,7 @@ npm run build
 | `FORTNOX_CLIENT_SECRET` | Yes | Your Fortnox app client secret |
 | `FORTNOX_REFRESH_TOKEN` | Yes | OAuth2 refresh token (only needed for initial setup; automatically persisted after first use) |
 | `FORTNOX_ACCESS_TOKEN` | No | Current access token (auto-refreshed) |
+| `FORTNOX_TOKEN_FILE` | No | Where rotated tokens are persisted (default `~/.fortnox-mcp/tokens.json`). `~` is expanded. Give each server entry its own file when you connect more than one Fortnox company; entries sharing one file overwrite each other's tokens. A file written by an older version is tried first, so after logging in to a different company, delete it |
 | `TRANSPORT` | No | `stdio` (default) or `http` |
 | `PORT` | No | HTTP port (default: 3000) |
 

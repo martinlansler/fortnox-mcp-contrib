@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fortnoxRequest } from "../services/api.js";
+import { fortnoxRequest, fetchAllPages } from "../services/api.js";
 import { ResponseFormat } from "../constants.js";
 import {
   buildToolResponse,
@@ -50,6 +50,7 @@ interface FortnoxSupplierListItem {
   Email?: string;
   City?: string;
   OrganisationNumber?: string;
+  Active?: boolean;
   "@url"?: string;
 }
 
@@ -87,7 +88,8 @@ Args:
   - response_format ('markdown' | 'json'): Output format
 
 Returns:
-  List of suppliers with supplier number, name, email, city, and organisation number.`,
+  List of suppliers with supplier number, name, email, city, organisation number and active flag.
+  The status filter is applied client-side (Fortnox has no server-side supplier status filter).`,
       inputSchema: ListSuppliersSchema,
       annotations: {
         readOnlyHint: true,
@@ -103,21 +105,45 @@ Returns:
           page: params.page
         };
 
-        if (params.filter) queryParams.filter = params.filter;
         if (params.search_name) queryParams.name = params.search_name;
 
-        const response = await fortnoxRequest<SupplierListResponse>("/3/suppliers", "GET", undefined, queryParams);
-        const suppliers = response.Suppliers || [];
-        const total = response.MetaInformation?.["@TotalResources"] || suppliers.length;
+        let suppliers: FortnoxSupplierListItem[];
+        let total: number;
+        let truncationReason: string | undefined;
+        if (params.filter) {
+          // Fortnox /3/suppliers has no status filter (it rejects ?filter=), so
+          // fetch every supplier and filter on the Active flag client-side.
+          const all = await fetchAllPages<FortnoxSupplierListItem, SupplierListResponse>(
+            "/3/suppliers",
+            params.search_name ? { name: params.search_name } : {},
+            (r) => r.Suppliers || [],
+            (r) => r.MetaInformation?.["@TotalResources"] || 0
+          );
+          const wantActive = params.filter === "active";
+          const filtered = all.items.filter((s) => (s.Active ?? true) === wantActive);
+          total = filtered.length;
+          if (all.truncated) {
+            truncationReason = `Filtered only the first ${all.items.length} of ${all.total} suppliers (${all.truncationReason}); ` +
+              `the list and total may be incomplete. Narrow with search_name.`;
+          }
+          const start = (params.page - 1) * params.limit;
+          suppliers = filtered.slice(start, start + params.limit);
+        } else {
+          const response = await fortnoxRequest<SupplierListResponse>("/3/suppliers", "GET", undefined, queryParams);
+          suppliers = response.Suppliers || [];
+          total = response.MetaInformation?.["@TotalResources"] || suppliers.length;
+        }
 
         const output = {
           ...buildPaginationMeta(total, params.page, params.limit, suppliers.length),
+          ...(truncationReason ? { truncated: true, truncation_reason: truncationReason } : {}),
           suppliers: suppliers.map((s) => ({
             supplier_number: s.SupplierNumber,
             name: s.Name,
             email: s.Email || null,
             city: s.City || null,
-            organisation_number: s.OrganisationNumber || null
+            organisation_number: s.OrganisationNumber || null,
+            active: s.Active ?? null
           }))
         };
 
@@ -136,6 +162,7 @@ Returns:
               (s.City ? `- **City**: ${s.City}\n` : "") +
               (s.OrganisationNumber ? `- **Org.nr**: ${s.OrganisationNumber}` : "")
           );
+          if (truncationReason) textContent += `\n\n⚠️ **Note**: ${truncationReason}`;
         }
 
         return buildToolResponse(textContent, output);

@@ -30,7 +30,11 @@ interface FortnoxVoucherRow {
   Account: number;
   Debit?: number;
   Credit?: number;
+  /** Fortnox fills this with the account name; the row's own text is TransactionInformation. */
   Description?: string;
+  TransactionInformation?: string;
+  /** True for a row struck out by a correction; it does not count towards the voucher. */
+  Removed?: boolean;
   CostCenter?: string;
   Project?: string;
 }
@@ -50,7 +54,14 @@ interface FortnoxVoucherListItem {
   VoucherNumber: number;
   Description: string;
   TransactionDate: string;
+  /** Fortnox financial year ID the voucher belongs to */
+  Year?: number;
   "@url"?: string;
+}
+
+/** Series + number only identify a voucher within one financial year. */
+function totalsKey(v: FortnoxVoucherListItem, year: number | undefined): string {
+  return `${year ?? ""}:${v.VoucherSeries}:${v.VoucherNumber}`;
 }
 
 interface VoucherListResponse {
@@ -100,6 +111,9 @@ Args:
   - financial_year (number): Fortnox financial year ID (use fortnox_list_financial_years to find)
   - from_date (string): Filter vouchers from this date (YYYY-MM-DD)
   - to_date (string): Filter vouchers to this date (YYYY-MM-DD)
+  - sort_by ('date' | 'number'): Sort client-side (Fortnox has no server-side voucher sort); fetches all matching vouchers first
+  - sort_order ('ascending' | 'descending'): Sort direction (default: ascending)
+  - include_totals (boolean): Add total_debit/total_credit per voucher (one extra request per voucher on the page)
   - response_format ('markdown' | 'json'): Output format
 
 Returns:
@@ -134,18 +148,79 @@ Examples:
         if (params.from_date) queryParams.fromdate = params.from_date;
         if (params.to_date) queryParams.todate = params.to_date;
 
-        const response = await fortnoxRequest<VoucherListResponse>(endpoint, "GET", undefined, queryParams);
-        const vouchers = response.Vouchers || [];
-        const total = response.MetaInformation?.["@TotalResources"] || vouchers.length;
+        let vouchers: FortnoxVoucherListItem[];
+        let total: number;
+        let truncationReason: string | undefined;
+        if (params.sort_by) {
+          // Fortnox /3/vouchers has no sort parameter: fetch the whole (filtered)
+          // set, sort here, then return the requested page.
+          const { limit: _l, page: _p, ...filterParams } = queryParams;
+          const all = await fetchAllPages<FortnoxVoucherListItem, VoucherListResponse>(
+            endpoint,
+            filterParams,
+            (r) => r.Vouchers || [],
+            (r) => r.MetaInformation?.["@TotalResources"] || 0
+          );
+          const dir = params.sort_order === "descending" ? -1 : 1;
+          const sorted = [...all.items].sort((a, b) => {
+            const primary = params.sort_by === "date"
+              ? a.TransactionDate.localeCompare(b.TransactionDate)
+              : 0;
+            return dir * (primary ||
+              a.VoucherSeries.localeCompare(b.VoucherSeries) ||
+              a.VoucherNumber - b.VoucherNumber);
+          });
+          total = all.truncated ? Math.max(all.total, sorted.length) : sorted.length;
+          if (all.truncated) {
+            truncationReason = `Sorted only the first ${sorted.length} of ${total} vouchers (${all.truncationReason}). ` +
+              `Narrow the date range or series to sort the full set.`;
+          }
+          const start = (params.page - 1) * params.limit;
+          vouchers = sorted.slice(start, start + params.limit);
+        } else {
+          const response = await fortnoxRequest<VoucherListResponse>(endpoint, "GET", undefined, queryParams);
+          vouchers = response.Vouchers || [];
+          total = response.MetaInformation?.["@TotalResources"] || vouchers.length;
+        }
+
+        // Optional per-voucher totals: the list endpoint has no amounts, so this
+        // costs one extra request per voucher on the returned page.
+        const totals = new Map<string, { debit: number; credit: number }>();
+        if (params.include_totals) {
+          for (const v of vouchers) {
+            // Series + number is only unique within a financial year: always look up the
+            // voucher's own year, or a date-filtered list in an older year gets the wrong totals.
+            const year = v.Year ?? params.financial_year;
+            if (year === undefined) {
+              throw new Error("include_totals needs financial_year: Fortnox did not say which year the vouchers belong to.");
+            }
+            const detail = await fortnoxRequest<VoucherResponse>(
+              `/3/vouchers/${encodeURIComponent(v.VoucherSeries)}/${v.VoucherNumber}`,
+              "GET",
+              undefined,
+              { financialyear: year }
+            );
+            const rows = (detail.Voucher.VoucherRows || []).filter((r) => !r.Removed);
+            totals.set(totalsKey(v, year), {
+              debit: rows.reduce((sum, r) => sum + (r.Debit || 0), 0),
+              credit: rows.reduce((sum, r) => sum + (r.Credit || 0), 0)
+            });
+          }
+        }
 
         const output = {
           ...buildPaginationMeta(total, params.page, params.limit, vouchers.length),
-          vouchers: vouchers.map((v) => ({
-            voucher_series: v.VoucherSeries,
-            voucher_number: v.VoucherNumber,
-            description: v.Description,
-            transaction_date: v.TransactionDate
-          }))
+          ...(truncationReason ? { truncated: true, truncation_reason: truncationReason } : {}),
+          vouchers: vouchers.map((v) => {
+            const t = totals.get(totalsKey(v, v.Year ?? params.financial_year));
+            return {
+              voucher_series: v.VoucherSeries,
+              voucher_number: v.VoucherNumber,
+              description: v.Description,
+              transaction_date: v.TransactionDate,
+              ...(t ? { total_debit: t.debit, total_credit: t.credit } : {})
+            };
+          })
         };
 
         let textContent: string;
@@ -160,6 +235,7 @@ Examples:
             params.limit,
             (v) => `- **${v.VoucherSeries}${v.VoucherNumber}** (${formatDisplayDate(v.TransactionDate)}): ${v.Description}`
           );
+          if (truncationReason) textContent += `\n\n⚠️ **Note**: ${truncationReason}`;
         }
 
         return buildToolResponse(textContent, output);
@@ -215,12 +291,17 @@ Returns:
           transaction_date: voucher.TransactionDate,
           rows: (voucher.VoucherRows || []).map((row) => ({
             account_number: row.Account,
+            account_name: row.Description || null,
+            transaction_information: row.TransactionInformation || null,
             debit: row.Debit || 0,
             credit: row.Credit || 0,
-            description: row.Description || null,
+            removed: row.Removed ?? false,
             cost_center: row.CostCenter || null,
             project: row.Project || null
-          }))
+          })),
+          // Totals exclude struck-out (removed) rows, matching what Fortnox shows as Summa.
+          total_debit: (voucher.VoucherRows || []).filter((r) => !r.Removed).reduce((sum, r) => sum + (r.Debit || 0), 0),
+          total_credit: (voucher.VoucherRows || []).filter((r) => !r.Removed).reduce((sum, r) => sum + (r.Credit || 0), 0)
         };
 
         let textContent: string;
@@ -236,22 +317,26 @@ Returns:
             "",
             "## Accounting Rows",
             "",
-            "| Account | Description | Debit | Credit |",
-            "|---------|-------------|-------|--------|"
+            "| Account | Name | Transaction info | Debit | Credit |",
+            "|---------|------|------------------|-------|--------|"
           ];
 
           let totalDebit = 0;
           let totalCredit = 0;
 
           for (const row of voucher.VoucherRows || []) {
-            totalDebit += row.Debit || 0;
-            totalCredit += row.Credit || 0;
+            const strike = (t: string) => (row.Removed ? `~~${t}~~` : t);
+            if (!row.Removed) {
+              totalDebit += row.Debit || 0;
+              totalCredit += row.Credit || 0;
+            }
             lines.push(
-              `| ${row.Account} | ${row.Description || "-"} | ${formatMoney(row.Debit || 0)} | ${formatMoney(row.Credit || 0)} |`
+              `| ${strike(String(row.Account))} | ${strike(row.Description || "-")} | ${row.TransactionInformation || "-"} | ${row.Debit ? strike(formatMoney(row.Debit)) : ""} | ${row.Credit ? strike(formatMoney(row.Credit)) : ""} |` +
+              (row.Removed ? " (removed)" : "")
             );
           }
 
-          lines.push(`| **Total** | | **${formatMoney(totalDebit)}** | **${formatMoney(totalCredit)}** |`);
+          lines.push(`| **Total** | | | **${formatMoney(totalDebit)}** | **${formatMoney(totalCredit)}** |`);
 
           textContent = lines.join("\n");
         }
@@ -278,6 +363,8 @@ Args:
   - transaction_date (string): Transaction date YYYY-MM-DD (required)
   - rows (array): Accounting rows, minimum 2 (required)
     - Each row: { account_number, debit?, credit?, description?, cost_center?, project? }
+      (row description is written to Fortnox TransactionInformation, the "Transaktionsinfo" column)
+  - financial_year (number): Fortnox financial year ID; optional, Fortnox derives it from the date
   - cost_center (string): Default cost center for all rows
   - project (string): Default project for all rows
 
@@ -331,7 +418,9 @@ Example:
             };
             if (row.debit !== undefined && row.debit > 0) voucherRow.Debit = row.debit;
             if (row.credit !== undefined && row.credit > 0) voucherRow.Credit = row.credit;
-            if (row.description) voucherRow.Description = row.description;
+            // Fortnox overwrites a row's Description with the account name; the row text
+            // shown as "Transaktionsinfo" is TransactionInformation.
+            if (row.description) voucherRow.TransactionInformation = row.description;
             if (row.cost_center || params.cost_center) {
               voucherRow.CostCenter = row.cost_center || params.cost_center;
             }
@@ -345,7 +434,8 @@ Example:
         const response = await fortnoxRequest<VoucherResponse>(
           "/3/vouchers",
           "POST",
-          { Voucher: voucherData }
+          { Voucher: voucherData },
+          params.financial_year ? { financialyear: params.financial_year } : undefined
         );
         const voucher = response.Voucher;
 
@@ -354,6 +444,7 @@ Example:
           message: `Voucher ${voucher.VoucherSeries}${voucher.VoucherNumber} created successfully`,
           voucher_series: voucher.VoucherSeries,
           voucher_number: voucher.VoucherNumber,
+          voucher_year: voucher.Year,
           description: voucher.Description,
           transaction_date: voucher.TransactionDate
         };
@@ -558,6 +649,7 @@ Examples:
           voucher_description: string;
           account: number;
           description: string | null;
+          transaction_information: string | null;
           debit: number;
           credit: number;
         }> = [];
@@ -590,6 +682,7 @@ Examples:
             if (!voucher || !voucher.VoucherRows) continue;
 
             for (const row of voucher.VoucherRows) {
+              if (row.Removed) continue;
               if (accountMatches(row.Account)) {
                 matchingTransactions.push({
                   voucher_series: voucher.VoucherSeries,
@@ -598,6 +691,7 @@ Examples:
                   voucher_description: voucher.Description,
                   account: row.Account,
                   description: row.Description || null,
+                  transaction_information: row.TransactionInformation || null,
                   debit: row.Debit || 0,
                   credit: row.Credit || 0
                 });
@@ -866,7 +960,8 @@ Examples:
               if (!voucher) continue;
 
               const descriptionMatch = textMatches(voucher.Description);
-              const rowMatch = voucher.VoucherRows?.some(row => textMatches(row.Description));
+              const rowMatch = voucher.VoucherRows?.some(row =>
+                !row.Removed && (textMatches(row.Description) || textMatches(row.TransactionInformation)));
 
               if (descriptionMatch || rowMatch) {
                 matchingVouchers.push({

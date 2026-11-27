@@ -92,6 +92,49 @@ export async function fortnoxRequest<T>(
 }
 
 /**
+ * Upload a file to Fortnox with multipart/form-data (used by /3/inbox and
+ * /3/archive, which do not accept JSON). Shares the rate limiter and token
+ * handling with fortnoxRequest.
+ */
+export async function fortnoxUpload<T>(
+  endpoint: string,
+  content: Buffer,
+  fileName: string,
+  contentType: string,
+  params?: Record<string, string | number | boolean | undefined>
+): Promise<T> {
+  await waitForRateLimit();
+
+  const tokenProvider = getTokenProvider();
+  const accessToken = await tokenProvider.getAccessToken(getCurrentUserId());
+
+  const cleanParams: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value !== undefined) cleanParams[key] = value;
+  }
+
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(content)], { type: contentType }), fileName);
+
+  try {
+    const response = await axios({
+      method: "POST",
+      url: `${FORTNOX_API_BASE_URL}${endpoint}`,
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json"
+      },
+      timeout: 60000,
+      params: Object.keys(cleanParams).length > 0 ? cleanParams : undefined,
+      data: form
+    });
+    return response.data;
+  } catch (error) {
+    throw handleApiError(error, endpoint);
+  }
+}
+
+/**
  * Handle API errors with descriptive messages
  */
 export function handleApiError(error: unknown, context?: string): Error {

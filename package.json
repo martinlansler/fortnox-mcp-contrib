@@ -20,7 +20,8 @@
     "release": "./scripts/release.sh",
     "release:patch": "./scripts/release.sh patch",
     "release:minor": "./scripts/release.sh minor",
-    "release:major": "./scripts/release.sh major"
+    "release:major": "./scripts/release.sh major",
+    "test": "vitest --run --passWithNoTests"
   },
   "engines": {
     "node": ">=18"
@@ -47,7 +48,8 @@
     "@types/node": "^22.10.0",
     "@vercel/node": "^5.5.27",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   },
   "keywords": [
     "mcp",

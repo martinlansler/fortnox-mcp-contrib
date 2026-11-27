@@ -22,7 +22,7 @@ export const VoucherRowSchema = z.object({
   description: z.string()
     .max(200)
     .optional()
-    .describe("Description for this row"),
+    .describe("Row text, stored as Fortnox TransactionInformation (Transaktionsinfo)"),
   cost_center: z.string()
     .max(20)
     .optional()
@@ -69,6 +69,15 @@ export const ListVouchersSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format")
     .optional()
     .describe("Filter vouchers to this date (YYYY-MM-DD)"),
+  sort_by: z.enum(["date", "number"])
+    .optional()
+    .describe("Sort client-side by transaction date or by series+number (Fortnox has no server-side voucher sort)"),
+  sort_order: z.enum(["ascending", "descending"])
+    .default("ascending")
+    .describe("Sort direction"),
+  include_totals: z.boolean()
+    .default(false)
+    .describe("Add total_debit/total_credit per voucher (one extra API request per voucher on the page)"),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Output format: 'markdown' or 'json'")
@@ -117,6 +126,10 @@ export const CreateVoucherSchema = z.object({
   rows: z.array(VoucherRowSchema)
     .min(2)
     .describe("Voucher rows (minimum 2 rows required, debit must equal credit)"),
+  financial_year: z.number()
+    .int()
+    .optional()
+    .describe("Fortnox financial year ID (1, 2, 3...). Optional: Fortnox derives the year from transaction_date."),
   cost_center: z.string()
     .max(20)
     .optional()
